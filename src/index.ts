@@ -2,15 +2,32 @@ import { defineTool, type ExtensionAPI, type ExtensionCommandContext } from "@ea
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
   checkFmAvailability,
+  checkFmLicense,
   checkFmServeHealth,
+  contextWindowError,
+  countFmTokens,
   DEFAULT_FM_SERVE_PORT,
   listFmSessions,
   runFmChat,
+  runFmRespond,
+  showFmLicense,
   startFmServe,
   stopFmServe,
 } from "./fm-cli.js";
 import { renderFmCall, renderFmResult } from "./render.js";
-import { fmChatParametersSchema, type FmChatOptions, type FmChatParameters, type FmChatResult } from "./types.js";
+import {
+  FM_CONTEXT_WINDOW,
+  fmChatParametersSchema,
+  fmCountTokensParametersSchema,
+  fmRespondParametersSchema,
+  type FmChatOptions,
+  type FmChatParameters,
+  type FmChatResult,
+  type FmCountTokensParameters,
+  type FmRespondParameters,
+  type FmRespondResult,
+  type FmTokenCountResult,
+} from "./types.js";
 
 /**
  * Parses raw command-line argument strings into FmChatOptions.
@@ -81,6 +98,27 @@ export function parseFmCommandLine(argString: string): FmChatOptions {
   return options;
 }
 
+async function readFmStatus(): Promise<{ ok: boolean; text: string }> {
+  const [availability, serveHealthy, license] = await Promise.all([
+    checkFmAvailability(),
+    checkFmServeHealth(),
+    checkFmLicense(),
+  ]);
+  const licenseText = license.summary;
+  if (!availability.available) {
+    return {
+      ok: false,
+      text: `Apple Foundation Models unavailable: ${availability.reason}. ${licenseText}`,
+    };
+  }
+  return {
+    ok: true,
+    text: `Apple Foundation Models available (models: ${availability.models.join(", ")}). Server (fm serve): ${
+      serveHealthy ? "RUNNING (ready for /model)" : "STOPPED"
+    }. ${licenseText}`,
+  };
+}
+
 /**
  * Pi Extension Entrypoint for Apple Foundation Models CLI (fm chat).
  */
@@ -101,7 +139,7 @@ export default function appleFmExtension(pi: ExtensionAPI) {
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 4096,
+        contextWindow: FM_CONTEXT_WINDOW,
         maxTokens: 2048,
       },
     ],
@@ -119,10 +157,10 @@ export default function appleFmExtension(pi: ExtensionAPI) {
     name: "apple_fm_chat",
     label: "Apple FM Chat",
     description:
-      "Interact with Apple Foundation Models on macOS via the native 'fm chat' CLI. Supports session continuity (--continue, --resume), system instructions, and vision tools (barcode, ocr).",
-    promptSnippet: "Chat with on-device Apple Foundation Models via macOS 'fm chat' CLI",
+      "Continue an on-device Apple Foundation Models chat session via `fm chat`. Saves to ~/.fm/sessions/. Does not accept images or JSON schema; use apple_fm_respond for those.",
+    promptSnippet: "Continue an on-device Apple Foundation Models chat session",
     promptGuidelines: [
-      "Use apple_fm_chat when you need to query Apple's on-device Foundation Model, continue previous dialogue sessions, or utilize built-in vision tools like OCR and barcode parsing on macOS.",
+      "Use apple_fm_chat to resume or continue a saved fm chat session. Use apple_fm_respond for one-shot answers, JSON schema output, OCR, or barcode images. Use apple_fm_count_tokens before a long prompt; the on-device window is 4096 tokens.",
     ],
     parameters: fmChatParametersSchema,
 
@@ -165,6 +203,25 @@ export default function appleFmExtension(pi: ExtensionAPI) {
       };
 
       try {
+        const tooLong = await contextWindowError({
+          prompt: params.prompt,
+          ...(params.instructions ? { instructions: params.instructions } : {}),
+          ...(signal ? { signal } : {}),
+        });
+        if (tooLong) {
+          return {
+            content: [{ type: "text", text: tooLong }],
+            details: {
+              success: false,
+              text: tooLong,
+              rawStdout: "",
+              rawStderr: "",
+              durationMs: 0,
+            },
+            isError: true,
+          };
+        }
+
         const result = await runFmChat({
           ...params,
           ...(signal ? { signal } : {}),
@@ -198,6 +255,158 @@ export default function appleFmExtension(pi: ExtensionAPI) {
 
     renderResult(result, options, theme, context) {
       return renderFmResult(result, options, theme, context);
+    },
+  }));
+
+  pi.registerTool(defineTool<typeof fmRespondParametersSchema, FmRespondResult>({
+    name: "apple_fm_respond",
+    label: "Apple FM Respond",
+    description:
+      "One-shot Apple Foundation Models response via `fm respond`. Use for structured JSON (schema), image OCR/barcode, or a single answer that should not create a chat session.",
+    promptSnippet: "One-shot on-device Apple Foundation Models response, with optional JSON schema and images",
+    promptGuidelines: [
+      "Prefer apple_fm_respond over apple_fm_chat when you need JSON, an image, or no saved session. Pass a JSON Schema object as schema; title and x-order are added automatically. Attach images for OCR or barcode. Do not use this to agree to the fm license.",
+    ],
+    parameters: fmRespondParametersSchema,
+    async execute(_toolCallId, params: FmRespondParameters, signal, onUpdate) {
+      const availability = await checkFmAvailability();
+      if (!availability.available) {
+        return {
+          content: [{ type: "text", text: `Apple Foundation Models unavailable: ${availability.reason}` }],
+          details: {
+            success: false,
+            text: availability.reason,
+            rawStdout: "",
+            rawStderr: "",
+            durationMs: 0,
+          },
+          isError: true,
+        };
+      }
+
+      let accumulatedText = "";
+      const handleChunk = (chunk: string) => {
+        accumulatedText += chunk;
+        onUpdate?.({
+          content: [{ type: "text", text: accumulatedText }],
+          details: {
+            success: true,
+            text: accumulatedText,
+            rawStdout: accumulatedText,
+            rawStderr: "",
+            durationMs: 0,
+          },
+        });
+      };
+
+      try {
+        const tooLong = await contextWindowError({
+          prompt: params.prompt,
+          ...(params.instructions ? { instructions: params.instructions } : {}),
+          ...(params.images ? { images: params.images } : {}),
+          ...(params.texts ? { texts: params.texts } : {}),
+          ...(signal ? { signal } : {}),
+        });
+        if (tooLong) {
+          return {
+            content: [{ type: "text", text: tooLong }],
+            details: {
+              success: false,
+              text: tooLong,
+              rawStdout: "",
+              rawStderr: "",
+              durationMs: 0,
+            },
+            isError: true,
+          };
+        }
+
+        const result = await runFmRespond({
+          ...params,
+          ...(signal ? { signal } : {}),
+          onChunk: handleChunk,
+        });
+        return {
+          content: [{ type: "text", text: result.text }],
+          details: result,
+          isError: !result.success,
+        };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Apple FM Respond failed: ${message}` }],
+          details: {
+            success: false,
+            text: message,
+            rawStdout: "",
+            rawStderr: message,
+            durationMs: 0,
+          },
+          isError: true,
+        };
+      }
+    },
+    renderCall(args, theme, context) {
+      return renderFmCall(args, theme, context, "respond");
+    },
+    renderResult(result, options, theme, context) {
+      return renderFmResult(result, options, theme, context);
+    },
+  }));
+
+  pi.registerTool(defineTool<typeof fmCountTokensParametersSchema, FmTokenCountResult>({
+    name: "apple_fm_count_tokens",
+    label: "Apple FM Tokens",
+    description: `Count on-device tokens with \`fm count-tokens\` before sending a prompt. The window is ${FM_CONTEXT_WINDOW} tokens.`,
+    promptSnippet: "Count tokens for the on-device Apple Foundation Model",
+    parameters: fmCountTokensParametersSchema,
+    async execute(_toolCallId, params: FmCountTokensParameters, signal) {
+      try {
+        const result = await countFmTokens({
+          ...params,
+          ...(signal ? { signal } : {}),
+        });
+        const text = result.success
+          ? `${result.count} tokens (${FM_CONTEXT_WINDOW - result.count} left in the ${FM_CONTEXT_WINDOW} window)`
+          : result.text;
+        return {
+          content: [{ type: "text", text }],
+          details: result,
+          isError: !result.success,
+        };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: message }],
+          details: {
+            success: false,
+            count: 0,
+            text: message,
+            rawStdout: "",
+            rawStderr: message,
+            durationMs: 0,
+          },
+          isError: true,
+        };
+      }
+    },
+    renderCall(args, theme, context) {
+      return renderFmCall(args, theme, context, "tokens");
+    },
+    renderResult(result, options, theme, context) {
+      return renderFmResult(
+        {
+          ...result,
+          details: {
+            success: result.details.success,
+            text: result.details.text,
+            durationMs: result.details.durationMs,
+          },
+        },
+        options,
+        theme,
+        context,
+      );
     },
   }));
 
@@ -236,7 +445,10 @@ export default function appleFmExtension(pi: ExtensionAPI) {
         { value: "--tool barcode ", label: "--tool barcode", description: "Enable built-in barcode tool" },
         { value: "serve", label: "serve", description: "Start or check status of fm serve (for /model)" },
         { value: "sessions", label: "sessions", description: "List saved chat sessions in ~/.fm/sessions/" },
-        { value: "status", label: "status", description: "Check Apple Foundation Models availability" },
+        { value: "status", label: "status", description: "Check availability, server, and license status" },
+        { value: "tokens ", label: "tokens <prompt>", description: "Count tokens against the 4096 window" },
+        { value: "license", label: "license", description: "Show whether the fm license has been agreed to" },
+        { value: "license show", label: "license show", description: "Print the license text without agreeing" },
       ];
 
       const filtered = commands.filter((c) => c.value.startsWith(prefix));
@@ -248,18 +460,44 @@ export default function appleFmExtension(pi: ExtensionAPI) {
 
       // 1. Status command
       if (trimmed === "status") {
-        const availability = await checkFmAvailability();
-        const serveHealthy = await checkFmServeHealth();
-        if (availability.available) {
-          ctx.ui.notify(
-            `Apple Foundation Models available (models: ${availability.models.join(", ")}). Server (fm serve): ${
-              serveHealthy ? "RUNNING (ready for /model)" : "STOPPED"
-            }`,
-            "info"
-          );
-        } else {
-          ctx.ui.notify(`Apple Foundation Models unavailable: ${availability.reason}`, "error");
+        const status = await readFmStatus();
+        ctx.ui.notify(status.text, status.ok ? "info" : "error");
+        return;
+      }
+
+      if (trimmed === "license" || trimmed.startsWith("license ")) {
+        const sub = trimmed.split(/\s+/)[1];
+        if (sub === "show") {
+          try {
+            const text = await showFmLicense();
+            await ctx.ui.editor("Apple Foundation Models license (read only)", text);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            ctx.ui.notify(`Could not show the fm license: ${message}`, "error");
+          }
+          return;
         }
+        const license = await checkFmLicense();
+        ctx.ui.notify(license.summary, license.agreed ? "info" : "warning");
+        return;
+      }
+
+      if (trimmed === "tokens" || trimmed.startsWith("tokens ")) {
+        const prompt = trimmed.slice("tokens".length).trim();
+        if (!prompt) {
+          ctx.ui.notify("Usage: /fm tokens <prompt>", "warning");
+          return;
+        }
+        const counted = await countFmTokens({ prompt });
+        if (!counted.success) {
+          ctx.ui.notify(counted.text, "error");
+          return;
+        }
+        const left = FM_CONTEXT_WINDOW - counted.count;
+        ctx.ui.notify(
+          `${counted.count} tokens, ${left} left in the ${FM_CONTEXT_WINDOW} window`,
+          left < 0 ? "warning" : "info",
+        );
         return;
       }
 
@@ -424,12 +662,8 @@ export default function appleFmExtension(pi: ExtensionAPI) {
           }
         }
       } else if (action.includes("Check model availability")) {
-        const status = await checkFmAvailability();
-        if (status.available) {
-          ctx.ui.notify(`Apple Foundation Models available (models: ${status.models.join(", ")})`, "info");
-        } else {
-          ctx.ui.notify(`Apple Foundation Models unavailable: ${status.reason}`, "error");
-        }
+        const status = await readFmStatus();
+        ctx.ui.notify(status.text, status.ok ? "info" : "error");
       }
     },
   });

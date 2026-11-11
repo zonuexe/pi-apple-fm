@@ -1,7 +1,18 @@
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
-import type { FmChatOptions, FmChatResult } from "./types.js";
+import type { FmChatResult } from "./types.js";
+
+interface FmCallView {
+  prompt?: string;
+  model?: string;
+  continue?: boolean;
+  resume?: string;
+  tools?: readonly string[];
+  useCase?: string;
+  schema?: unknown;
+  images?: readonly unknown[];
+}
 
 /** Structural slice of Pi's tool render context. `ToolRenderContext` is not exported. */
 interface FmRenderContext {
@@ -26,13 +37,14 @@ function firstText(content: readonly (TextContent | ImageContent)[]): string | u
  * Custom renderer for the tool call header in Pi TUI.
  */
 export function renderFmCall(
-  args: Partial<FmChatOptions>,
+  args: FmCallView,
   theme: Theme,
   context: Pick<FmRenderContext, "lastComponent">,
+  command = "chat",
 ): Text {
   const text = textComponent(context.lastComponent);
 
-  let header = theme.fg("toolTitle", theme.bold(" Apple FM [chat] "));
+  let header = theme.fg("toolTitle", theme.bold(` Apple FM [${command}] `));
 
   const badges: string[] = [];
 
@@ -48,6 +60,18 @@ export function renderFmCall(
 
   if (args.tools && args.tools.length > 0) {
     badges.push(`tools:[${args.tools.join(",")}]`);
+  }
+
+  if (args.useCase) {
+    badges.push(`use-case:${args.useCase}`);
+  }
+
+  if (args.schema !== undefined) {
+    badges.push("schema");
+  }
+
+  if (args.images && args.images.length > 0) {
+    badges.push(`images:${args.images.length}`);
   }
 
   if (badges.length > 0) {
@@ -68,7 +92,7 @@ export function renderFmCall(
  * Custom renderer for the tool call result in Pi TUI.
  */
 export function renderFmResult(
-  result: AgentToolResult<FmChatResult>,
+  result: AgentToolResult<FmChatResult | { success: boolean; text: string; durationMs: number; sessionName?: string }>,
   options: ToolRenderResultOptions,
   theme: Theme,
   context: FmRenderContext,

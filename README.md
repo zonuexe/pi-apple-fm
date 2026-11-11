@@ -8,7 +8,7 @@
 
 `@zonuexe/pi-apple-fm` connects Pi directly with Apple's native on-device Foundation Models framework through macOS's built-in `/usr/bin/fm` CLI.
 
-It provides 1:1 feature parity with `fm chat --help`, giving both your AI coding agent (as a callable tool) and you (as an interactive slash command) direct access to local Apple Foundation Models, complete with session continuity, system instructions, and Apple Vision tools (`barcode`, `ocr`).
+It exposes `fm chat` for saved sessions, `fm respond` for one-shot answers (JSON schema and images), and `fm count-tokens` against the 4096-token on-device window. `/fm status` also reports whether the `fm` license has been agreed to. It does not agree to the license for you.
 
 ---
 
@@ -90,10 +90,33 @@ The AI agent inside Pi can invoke `apple_fm_chat` to leverage local on-device Ap
 - **Real-time token streaming:** Emits live partial responses in the TUI as tokens are generated on-device.
 - **Custom UI Rendering:** Custom TUI headers displaying ` Apple FM [chat]`, active tools, session IDs, and execution latency.
 - **Graceful Cancellation:** Cancels the underlying `fm` process immediately if the user stops the agent.
+- **Window check:** Rejects the call when `fm count-tokens` reports more than 4096 tokens.
+
+`fm chat` cannot attach images. OCR and barcode belong on `apple_fm_respond`.
 
 ---
 
-### 3. Slash Command: `/fm`
+### 3. Tool: `apple_fm_respond`
+
+One-shot `fm respond`. It does not write a session under `~/.fm/sessions/`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `prompt` | `string` | Prompt sent on stdin |
+| `instructions` | `string` (optional) | `-i, --instructions` |
+| `schema` | `object` or JSON `string` (optional) | Structured output. Missing `title` and `x-order` are filled in |
+| `images` | `{ path, label? }[]` (optional) | `--image` / `--label` |
+| `texts` | `string[]` (optional) | Extra `--text` segments |
+| `tools` | `("barcode" \| "ocr")[]` (optional) | Built-in vision tools. Pass an image with them |
+| `useCase` | `"general" \| "content-tagging"` (optional) | `--use-case` |
+
+### 4. Tool: `apple_fm_count_tokens`
+
+Counts tokens with `fm count-tokens --quiet`. The same count is available as `/fm tokens <prompt>`.
+
+---
+
+### 5. Slash Command: `/fm`
 
 Use `/fm` inside Pi's interactive terminal to converse with Apple Foundation Models directly.
 
@@ -116,6 +139,9 @@ You can also supply flags directly on the command line:
 /fm --tool ocr Read the text in this image
 /fm sessions
 /fm status
+/fm tokens What is Swift?
+/fm license
+/fm license show
 ```
 
 #### Autocompletion:
