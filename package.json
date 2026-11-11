@@ -1,6 +1,6 @@
 {
   "name": "@zonuexe/pi-apple-fm",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Apple Foundation Models (fm chat) extension for Pi coding agent on macOS",
   "type": "module",
   "main": "./index.ts",
