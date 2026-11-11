@@ -63,10 +63,10 @@ pi -e .
 
 ### 1. Model Provider: `apple/system` (Selectable via `/model`)
 
-`@zonuexe/pi-apple-fm` registers an OpenAI-compatible provider `apple` that connects directly to `fm serve` (`http://127.0.0.1:1976/v1`):
+`@zonuexe/pi-apple-fm` registers provider `apple` (not `apple-fm`) and connects to on-device `fm serve` (`http://127.0.0.1:1976/v1` by default):
 
 - **Select in Pi:** Open `/model` and choose `apple / system` (or run `pi --model apple/system`).
-- **Server Control:** Start the background server anytime using `/fm serve start` (or through the interactive `/fm` menu).
+- **Server Control:** `/fm serve start` launches a headless loopback server. Auto-start is on by default, so selecting `apple/system` starts it before the request when it is stopped. This package does not register Private Cloud Compute and does not open Terminal.app.
 
 ---
 
@@ -142,7 +142,15 @@ You can also supply flags directly on the command line:
 /fm tokens What is Swift?
 /fm license
 /fm license show
+/fm auto-start status
+/fm logs
+/fm help
 ```
+
+Provider requests for `apple/system` keep the current turn and the `bash` tool, and rewrite JSON Schema unions that `fm serve` rejects. Output is capped at 512 tokens so a completion can fit the 4096-token window.
+
+These names are intentionally different from [adstastic/pi-apple-fm](https://github.com/adstastic/pi-apple-fm): provider `apple`, command `/fm`, `PI_APPLE_FM_PORT`, `PI_APPLE_FM_BIN`, and `~/.pi/agent/zonuexe-pi-apple-fm.json`.
+
 
 #### Autocompletion:
 - Typing `/fm -r ` or `/fm --resume ` dynamically reads `~/.fm/sessions/` and auto-completes session names with message counts and dates.

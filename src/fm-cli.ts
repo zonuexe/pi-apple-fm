@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
 import { Check } from "typebox/value";
+import { DEFAULT_FM_SERVE_PORT, resolveFmBin } from "./runtime.js";
 import { normalizeFmSchema } from "./schema.js";
 import {
   FM_CONTEXT_WINDOW,
@@ -21,7 +22,7 @@ import {
   type FmTokenCountResult,
 } from "./types.js";
 
-export const DEFAULT_FM_SERVE_PORT = 1976;
+export { DEFAULT_FM_SERVE_PORT };
 
 let managedFmServeProcess: ChildProcess | null = null;
 
@@ -185,8 +186,8 @@ function spawnFm(
 
     const child =
       stdin === undefined
-        ? spawn("fm", args, { stdio: ["ignore", "pipe", "pipe"] })
-        : spawn("fm", args, { stdio: ["pipe", "pipe", "pipe"] });
+        ? spawn(resolveFmBin(), args, { stdio: ["ignore", "pipe", "pipe"] })
+        : spawn(resolveFmBin(), args, { stdio: ["pipe", "pipe", "pipe"] });
 
     if (signal) {
       if (signal.aborted) {
@@ -296,7 +297,7 @@ export async function startFmServe(port = DEFAULT_FM_SERVE_PORT): Promise<FmServ
 
   return new Promise((resolve) => {
     try {
-      const child = spawn("fm", ["serve", "--port", String(port)], {
+      const child = spawn(resolveFmBin(), ["serve", "--host", "127.0.0.1", "--port", String(port)], {
         stdio: "ignore",
         detached: false,
       });
@@ -354,7 +355,7 @@ export async function checkFmAvailability(): Promise<FmAvailability> {
     let stdout = "";
     let stderr = "";
 
-    const child = spawn("fm", ["available"], {
+    const child = spawn(resolveFmBin(), ["available"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 

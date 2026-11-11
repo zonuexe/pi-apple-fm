@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Selecting `apple/system` starts a headless `fm serve` when auto-start is on, and rewrites provider requests so the on-device server can accept them.
+- `/fm auto-start`, `/fm logs`, and `/fm help` control that behavior. Settings live in `~/.pi/agent/zonuexe-pi-apple-fm.json`.
+- `PI_APPLE_FM_PORT` and `PI_APPLE_FM_BIN` override the server port and `fm` binary.
+
 ## [0.0.1] - 2026-11-11
 
 ### Added

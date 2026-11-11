@@ -6,7 +6,6 @@ import {
   checkFmServeHealth,
   contextWindowError,
   countFmTokens,
-  DEFAULT_FM_SERVE_PORT,
   listFmSessions,
   runFmChat,
   runFmRespond,
@@ -15,6 +14,16 @@ import {
   stopFmServe,
 } from "./fm-cli.js";
 import { renderFmCall, renderFmResult } from "./render.js";
+import {
+  appendFmLog,
+  loadStartServerBeforeRequest,
+  LOG_FILE,
+  resolveFmPort,
+  saveStartServerBeforeRequest,
+  SETTINGS_FILE,
+  STATUS_KEY,
+} from "./runtime.js";
+import { normalizeFmServePayload } from "./serve-payload.js";
 import {
   FM_CONTEXT_WINDOW,
   fmChatParametersSchema,
@@ -98,10 +107,10 @@ export function parseFmCommandLine(argString: string): FmChatOptions {
   return options;
 }
 
-async function readFmStatus(): Promise<{ ok: boolean; text: string }> {
+async function readFmStatus(port: number): Promise<{ ok: boolean; text: string }> {
   const [availability, serveHealthy, license] = await Promise.all([
     checkFmAvailability(),
-    checkFmServeHealth(),
+    checkFmServeHealth(port),
     checkFmLicense(),
   ]);
   const licenseText = license.summary;
@@ -123,31 +132,77 @@ async function readFmStatus(): Promise<{ ok: boolean; text: string }> {
  * Pi Extension Entrypoint for Apple Foundation Models CLI (fm chat).
  */
 export default function appleFmExtension(pi: ExtensionAPI) {
-  // =========================================================================
-  // 1. Register Provider: apple (Enables model selection in /model)
-  // =========================================================================
+  const port = resolveFmPort();
+  let startServerBeforeRequest = true;
+
+  // On-device `system` only. Private Cloud Compute is not a released `fm` model.
   pi.registerProvider("apple", {
-    name: "Apple Foundation Models",
-    baseUrl: `http://127.0.0.1:${DEFAULT_FM_SERVE_PORT}/v1`,
+    name: "On-device Apple FM",
+    baseUrl: `http://127.0.0.1:${port}/v1`,
     apiKey: "none",
     api: "openai-completions",
     models: [
       {
         type: "chat",
         id: "system",
-        name: "Apple Foundation Model (System)",
+        name: "Apple Foundation Model (On-device)",
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: FM_CONTEXT_WINDOW,
-        maxTokens: 2048,
+        maxTokens: 512,
+        compat: {
+          supportsStore: false,
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: false,
+          supportsUsageInStreaming: true,
+          supportsStrictMode: false,
+          maxTokensField: "max_tokens",
+        },
       },
     ],
   });
 
-  // Clean up any background `fm serve` process on session shutdown
+  pi.on("session_start", async () => {
+    startServerBeforeRequest = await loadStartServerBeforeRequest();
+  });
+
   pi.on("session_shutdown", async () => {
     stopFmServe();
+  });
+
+  pi.on("before_provider_request", async (event, ctx) => {
+    if (ctx.model?.provider !== "apple") return;
+
+    if (!(await checkFmServeHealth(port))) {
+      if (!startServerBeforeRequest) {
+        ctx.ui.notify("fm serve is stopped. Run /fm serve start, or /fm auto-start on.", "error");
+        ctx.abort();
+        return;
+      }
+      ctx.ui.setStatus(STATUS_KEY, "Starting on-device fm serve…");
+      const started = await startFmServe(port);
+      ctx.ui.setStatus(STATUS_KEY, undefined);
+      await appendFmLog("serve", { port, ok: started.running, spawned: started.spawned });
+      if (!started.running) {
+        ctx.ui.notify(`Failed to start fm serve: ${started.error ?? "unknown error"}`, "error");
+        ctx.abort();
+        return;
+      }
+    }
+
+    return normalizeFmServePayload(event.payload, {
+      fitContextWindow: ctx.model.id === "system",
+    });
+  });
+
+  pi.on("model_select", async (event, ctx) => {
+    if (event.model.provider !== "apple") return;
+    const mode = startServerBeforeRequest ? "on" : "off";
+    ctx.ui.notify(
+      `apple/system uses the ${FM_CONTEXT_WINDOW}-token on-device model. Provider calls send the latest turn and bash. Server auto-start is ${mode}.`,
+      "info",
+    );
   });
 
   // =========================================================================
@@ -444,6 +499,11 @@ export default function appleFmExtension(pi: ExtensionAPI) {
         { value: "--tool ocr ", label: "--tool ocr", description: "Enable built-in OCR tool" },
         { value: "--tool barcode ", label: "--tool barcode", description: "Enable built-in barcode tool" },
         { value: "serve", label: "serve", description: "Start or check status of fm serve (for /model)" },
+        { value: "auto-start on", label: "auto-start on", description: "Start fm serve before apple/system requests" },
+        { value: "auto-start off", label: "auto-start off", description: "Do not start fm serve automatically" },
+        { value: "auto-start status", label: "auto-start status", description: "Show the saved auto-start setting" },
+        { value: "logs", label: "logs", description: "Show recent on-device server actions" },
+        { value: "help", label: "help", description: "Show /fm commands" },
         { value: "sessions", label: "sessions", description: "List saved chat sessions in ~/.fm/sessions/" },
         { value: "status", label: "status", description: "Check availability, server, and license status" },
         { value: "tokens ", label: "tokens <prompt>", description: "Count tokens against the 4096 window" },
@@ -460,8 +520,70 @@ export default function appleFmExtension(pi: ExtensionAPI) {
 
       // 1. Status command
       if (trimmed === "status") {
-        const status = await readFmStatus();
+        const status = await readFmStatus(port);
         ctx.ui.notify(status.text, status.ok ? "info" : "error");
+        return;
+      }
+
+      if (trimmed === "help") {
+        ctx.ui.notify(
+          [
+            "/fm — chat menu",
+            "/fm serve start|status|stop — headless on-device fm serve",
+            "/fm auto-start on|off|status — start the server before apple/system requests",
+            "/fm status — availability, server, and license",
+            "/fm logs — recent server actions",
+            "/fm tokens <prompt> — count tokens",
+            "/fm license show — print terms without agreeing",
+            "/model — select apple/system. PCC is not registered.",
+            `Settings: ${SETTINGS_FILE}`,
+            `Log: ${LOG_FILE}`,
+          ].join("\n"),
+          "info",
+        );
+        return;
+      }
+
+      if (trimmed === "logs") {
+        try {
+          const { readFile } = await import("node:fs/promises");
+          const content = await readFile(LOG_FILE, "utf8");
+          const lines = content.trimEnd().split("\n").slice(-20);
+          ctx.ui.notify(["Recent on-device FM logs", ...lines, `Log file: ${LOG_FILE}`].join("\n"), "info");
+        } catch {
+          ctx.ui.notify(`No log entries yet. ${LOG_FILE}`, "info");
+        }
+        return;
+      }
+
+      if (trimmed === "auto-start" || trimmed.startsWith("auto-start ")) {
+        const action = trimmed.split(/\s+/)[1] ?? "status";
+        if (action !== "on" && action !== "off" && action !== "status") {
+          ctx.ui.notify("Usage: /fm auto-start [on|off|status]", "warning");
+          return;
+        }
+        if (action === "status") {
+          ctx.ui.notify(
+            `Auto-start is ${startServerBeforeRequest ? "on" : "off"}. Settings: ${SETTINGS_FILE}`,
+            "info",
+          );
+          return;
+        }
+        const enabled = action === "on";
+        try {
+          await saveStartServerBeforeRequest(enabled);
+          startServerBeforeRequest = enabled;
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          ctx.ui.notify(`Could not save auto-start: ${message}`, "error");
+          return;
+        }
+        ctx.ui.notify(
+          enabled
+            ? "Auto-start is on. A stopped fm serve starts before apple/system requests."
+            : "Auto-start is off. Run /fm serve start before using apple/system.",
+          "info",
+        );
         return;
       }
 
@@ -510,14 +632,14 @@ export default function appleFmExtension(pi: ExtensionAPI) {
           return;
         }
 
-        const isRunning = await checkFmServeHealth();
+        const isRunning = await checkFmServeHealth(port);
         if (sub === "start" || !isRunning) {
-          ctx.ui.notify("Starting Apple Foundation Models server (fm serve)...", "info");
-          const result = await startFmServe();
+          ctx.ui.notify("Starting on-device Apple FM server (fm serve)...", "info");
+          const result = await startFmServe(port);
           if (result.running) {
             ctx.ui.notify(
-              ` fm serve is running on http://127.0.0.1:${DEFAULT_FM_SERVE_PORT}. You can now select 'apple/system' in /model!`,
-              "info"
+              ` fm serve is running on http://127.0.0.1:${port}. You can now select apple/system in /model.`,
+              "info",
             );
           } else {
             ctx.ui.notify(`Failed to start fm serve: ${result.error}`, "error");
@@ -526,8 +648,8 @@ export default function appleFmExtension(pi: ExtensionAPI) {
         }
 
         ctx.ui.notify(
-          ` fm serve is already running on http://127.0.0.1:${DEFAULT_FM_SERVE_PORT}. Select 'apple/system' in /model.`,
-          "info"
+          ` fm serve is already running on http://127.0.0.1:${port}. Select apple/system in /model.`,
+          "info",
         );
         return;
       }
@@ -642,10 +764,10 @@ export default function appleFmExtension(pi: ExtensionAPI) {
           sessions.map((s) => `${s.name} [${s.mtime.toLocaleDateString()}] - ${s.preview ?? ""}`)
         );
       } else if (action.includes("Start / Check API server")) {
-        const isRunning = await checkFmServeHealth();
+        const isRunning = await checkFmServeHealth(port);
         if (isRunning) {
-          const choice = await ctx.ui.select("fm serve is running on port 1976", [
-            "Keep running (select 'apple/system' in /model)",
+          const choice = await ctx.ui.select(`fm serve is running on port ${port}`, [
+            "Keep running (select apple/system in /model)",
             "Stop server",
           ]);
           if (choice?.includes("Stop server")) {
@@ -653,8 +775,8 @@ export default function appleFmExtension(pi: ExtensionAPI) {
             ctx.ui.notify("Stopped background fm serve process.", "info");
           }
         } else {
-          ctx.ui.notify("Starting fm serve on http://127.0.0.1:1976...", "info");
-          const result = await startFmServe();
+          ctx.ui.notify(`Starting fm serve on http://127.0.0.1:${port}...`, "info");
+          const result = await startFmServe(port);
           if (result.running) {
             ctx.ui.notify(" fm serve is active! You can now select 'apple/system' in /model.", "info");
           } else {
@@ -662,7 +784,7 @@ export default function appleFmExtension(pi: ExtensionAPI) {
           }
         }
       } else if (action.includes("Check model availability")) {
-        const status = await readFmStatus();
+        const status = await readFmStatus(port);
         ctx.ui.notify(status.text, status.ok ? "info" : "error");
       }
     },
