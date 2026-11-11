@@ -27,7 +27,8 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "mutate": "PI_APPLE_FM_SKIP_LIVE=1 stryker run"
   },
   "pi": {
     "extensions": [
@@ -42,8 +43,11 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^10.1.1",
+    "@stryker-mutator/tap-runner": "^10.1.1",
+    "@stryker-mutator/typescript-checker": "^10.1.1",
     "@types/node": "^26.6.6",
-    "typescript": "^7.0.2",
-    "typebox": "^1.4.6"
+    "typebox": "^1.4.6",
+    "typescript": "^6.0.3"
   }
 }

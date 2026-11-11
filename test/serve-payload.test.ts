@@ -64,6 +64,33 @@ describe("fm serve payload", () => {
       ["bash"],
     );
   });
+
+  it("leaves history and non-bash tools alone when not fitting the window", () => {
+    const payload = normalizeFmServePayload({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "old" }] },
+        { role: "user", content: [{ type: "image" }, { type: "text", text: "keep" }] },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "read",
+            parameters: { type: "object", additionalProperties: true, patternProperties: { x: {} } },
+          },
+        },
+      ],
+    }) as {
+      messages: Array<{ content: unknown }>;
+      tools: Array<{ function: { parameters: { additionalProperties: boolean; patternProperties?: unknown } } }>;
+    };
+
+    assert.equal(payload.messages[0]?.content, "old");
+    assert.deepEqual(payload.messages[1]?.content, [{ type: "image" }, { type: "text", text: "keep" }]);
+    assert.equal(payload.tools[0]?.function.parameters.additionalProperties, false);
+    assert.equal(payload.tools[0]?.function.parameters.patternProperties, undefined);
+    assert.equal(normalizeFmServePayload("nope"), "nope");
+  });
 });
 
 describe("runtime symbols", () => {
@@ -79,9 +106,15 @@ describe("runtime symbols", () => {
 
   it("resolves the on-device port and binary without reading APPLE_FM_*", () => {
     assert.equal(resolveFmPort(""), 1976);
+    assert.equal(resolveFmPort("   "), 1976);
+    assert.equal(resolveFmPort("1"), 1);
+    assert.equal(resolveFmPort("65535"), 65535);
     assert.equal(resolveFmPort("1977"), 1977);
     assert.throws(() => resolveFmPort("0"), /PI_APPLE_FM_PORT/);
+    assert.throws(() => resolveFmPort("65536"), /PI_APPLE_FM_PORT/);
+    assert.throws(() => resolveFmPort("12a"), /PI_APPLE_FM_PORT/);
     assert.equal(resolveFmBin(""), "/usr/bin/fm");
-    assert.equal(resolveFmBin("/opt/fm"), "/opt/fm");
+    assert.equal(resolveFmBin("  "), "/usr/bin/fm");
+    assert.equal(resolveFmBin("  /opt/fm  "), "/opt/fm");
   });
 });

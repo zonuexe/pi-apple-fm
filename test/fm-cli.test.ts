@@ -16,6 +16,8 @@ import {
 import { parseFmCommandLine } from "../src/index.js";
 import { normalizeFmSchema } from "../src/schema.js";
 
+const skipLive = process.env.PI_APPLE_FM_SKIP_LIVE === "1";
+
 describe("Apple Foundation Models CLI integration", () => {
   it("strips ANSI escape codes accurately", () => {
     const colored = "\u001b[38;2;130;215;90mHello\u001b[0m \u001b[1mWorld\u001b[0m";
@@ -48,6 +50,38 @@ describe("Apple Foundation Models CLI integration", () => {
       "ocr",
       "--set-default-model",
       "system",
+    ]);
+  });
+
+  it("omits blank chat and respond flags", () => {
+    assert.deepEqual(
+      buildFmChatArgs({
+        prompt: "hi",
+        continue: false,
+        resume: "  ",
+        instructions: "",
+        model: " \t",
+        tools: ["", "  ", "ocr"],
+        setDefaultModel: " ",
+      }),
+      ["chat", "--tool", "ocr"],
+    );
+
+    assert.deepEqual(
+      buildFmRespondArgs({
+        prompt: "hi",
+        instructions: " ",
+        model: "",
+        images: [{ path: "  ", label: "page" }, { path: "photo.jpg", label: " " }],
+        texts: ["", "caption"],
+        tools: [" ", "barcode"],
+      }),
+      ["respond", "--image", "photo.jpg", "--text", "caption", "--tool", "barcode"],
+    );
+
+    assert.deepEqual(buildFmCountTokensArgs({ prompt: "hi", instructions: " ", texts: [""] }), [
+      "count-tokens",
+      "--quiet",
     ]);
   });
 
@@ -98,6 +132,8 @@ describe("Apple Foundation Models CLI integration", () => {
     assert.equal(parseFmTokenCount("3"), 3);
     assert.equal(parseFmLicenseStatus("Agreed to license FM1 version 1.0 on yesterday.").agreed, true);
     assert.equal(parseFmLicenseStatus("Not agreed").agreed, false);
+    assert.equal(parseFmLicenseStatus("").summary, "License status unavailable");
+    assert.throws(() => parseFmTokenCount(""), /Unexpected token count/);
   });
 
   it("fills Apple schema fields the CLI decoder requires", () => {
@@ -119,6 +155,28 @@ describe("Apple Foundation Models CLI integration", () => {
     const properties = normalized.properties as { address: { title: string; "x-order": string[] } };
     assert.equal(properties.address.title, "Address");
     assert.deepEqual(properties.address["x-order"], ["street"]);
+
+    const titled = normalizeFmSchema({
+      type: "object",
+      title: " Kept ",
+      properties: { name: { type: "string" } },
+      "x-order": ["name"],
+      $ref: undefined,
+    });
+    assert.equal(titled.title, " Kept ");
+    assert.deepEqual(titled["x-order"], ["name"]);
+
+    const ref = normalizeFmSchema({ $ref: "#/$defs/Address", title: "Skip" });
+    assert.deepEqual(ref, { $ref: "#/$defs/Address", title: "Skip" });
+
+    const items = normalizeFmSchema({
+      type: "array",
+      items: { type: "object", properties: { id: { type: "string" } } },
+    });
+    const itemSchema = items.items as { title: string; "x-order": string[] };
+    assert.equal(itemSchema.title, "ResponseItem");
+    assert.deepEqual(itemSchema["x-order"], ["id"]);
+    assert.throws(() => normalizeFmSchema("nope"), /JSON object/);
   });
 
   it("parses CLI flags from slash command input", () => {
@@ -150,6 +208,10 @@ describe("Apple Foundation Models CLI integration", () => {
   });
 
   it("executes fm chat and streams response on supported macOS", async (t) => {
+    if (skipLive) {
+      t.skip("Skipping live chat test during mutation testing.");
+      return;
+    }
     const availability = await checkFmAvailability();
     if (!availability.available) {
       t.skip("Skipping live chat test: Apple Foundation Models not available on this machine.");
@@ -169,6 +231,10 @@ describe("Apple Foundation Models CLI integration", () => {
   });
 
   it("counts tokens and returns schema JSON from fm respond", async (t) => {
+    if (skipLive) {
+      t.skip("Skipping live respond test during mutation testing.");
+      return;
+    }
     const availability = await checkFmAvailability();
     if (!availability.available) {
       t.skip("Skipping live respond test: Apple Foundation Models not available on this machine.");

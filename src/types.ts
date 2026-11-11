@@ -90,7 +90,9 @@ export function isFmUseCase(value: string): value is FmUseCase {
   return (FM_USE_CASES as readonly string[]).includes(value);
 }
 
-const fmUseCaseSchema = Type.Union([Type.Literal("general"), Type.Literal("content-tagging")]);
+const fmUseCaseSchema = Type.Union([Type.Literal("general"), Type.Literal("content-tagging")], {
+  description: "Model use case (--use-case): general or content-tagging",
+});
 
 const fmImageSchema = Type.Object({
   path: Type.String({
@@ -144,9 +146,7 @@ export const fmRespondParametersSchema = Type.Object({
       description: "Built-in tools to enable with images, e.g. ['ocr'] or ['barcode']",
     }),
   ),
-  useCase: Type.Optional(
-    fmUseCaseSchema,
-  ),
+  useCase: Type.Optional(fmUseCaseSchema),
 });
 
 export type FmRespondParameters = Static<typeof fmRespondParametersSchema>;
